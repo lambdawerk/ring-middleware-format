@@ -8,7 +8,7 @@
             :distribution :repo
             :comments "same as Clojure"}
   :dependencies [[org.clojure/core.memoize "0.5.8"]
-                 [ring/ring-core "1.4.0"]
+                 [ring/ring-core "1.6.0-beta6"]
                  [cheshire "5.5.0"]
                  [org.clojure/tools.reader "0.10.0"]
                  [com.ibm.icu/icu4j "56.1"]

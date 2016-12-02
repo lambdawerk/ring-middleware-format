@@ -136,11 +136,6 @@
   ([encoder content-type]
      (make-encoder encoder content-type false)))
 
-(defn default-handle-error
-  "Default error handling function used, which rethrows the Exception"
-  [e _ _]
-  (throw e))
-
 (defn choose-charset*
   "Returns an useful charset from the accept-charset string.
    Defaults to utf-8"
@@ -177,32 +172,33 @@
   [handler & args]
   (let [{:keys [predicate encoders charset binary? handle-error]} (impl/extract-options args)
         charset (or charset default-charset-extractor)
-        handle-error (or handle-error default-handle-error)
-        predicate (or predicate serializable?)]
-    (fn [req]
-      (let [{:keys [headers body] :as response} (handler req)]
-        (try
-          (if (predicate req response)
-            (let [{:keys [encoder enc-type binary?]} (or (preferred-encoder encoders req) (first encoders))
-                  [body* content-type]
-                  (if binary?
-                    (let [body* (encoder body)
-                          ctype (str (enc-type :type) "/" (enc-type :sub-type))]
-                      [body* ctype])
-                    (let [^String char-enc (if (string? charset) charset (charset req))
-                          ^String body-string (if (nil? body) "" (encoder body))
-                          body* (.getBytes body-string char-enc)
-                          ctype (str (enc-type :type) "/" (enc-type :sub-type)
-                                     "; charset=" char-enc)]
-                      [body* ctype]))
-                  body-length (count body*)]
-              (-> response
-                  (assoc :body (if (pos? body-length) (io/input-stream body*) nil))
-                  (res/content-type content-type)
-                  (res/header "Content-Length" body-length)))
-            response)
-          (catch Exception e
-            (handle-error e req response)))))))
+        predicate (or predicate serializable?)
+        encode-response-body (fn [req {:keys [body] :as response} default-handle-error]
+                               (try
+                                 (if-not (predicate req response)
+                                   response
+                                   (let [{:keys [encoder enc-type binary?]} (or (preferred-encoder encoders req) (first encoders))
+                                         ^String charset (if (string? charset) charset (charset req))
+                                         [body content-type] (if binary?
+                                                               [(encoder body)
+                                                                (str (enc-type :type) "/" (enc-type :sub-type))]
+                                                               [(let [#^String body (if body (encoder body) "")]
+                                                                  (.getBytes body charset))
+                                                                (str (enc-type :type) "/" (enc-type :sub-type)
+                                                                     "; charset=" charset)])
+                                         body-length (count body)]
+                                     (-> response
+                                         (assoc :body (when (pos? body-length)
+                                                        (io/input-stream body)))
+                                         (res/content-type content-type)
+                                         (res/header "Content-Length" body-length))))
+                                 (catch Exception e
+                                   ((or handle-error default-handle-error) e))))]
+    (fn
+      ([req]
+       (encode-response-body req (handler req) (fn [e] (throw e))))
+      ([req respond raise]
+       (handler req #(respond (encode-response-body req % raise)) raise)))))
 
 (defn make-json-encoder [pretty options]
   (let [opts (merge {:pretty pretty} options)]

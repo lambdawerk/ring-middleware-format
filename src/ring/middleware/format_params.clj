@@ -72,11 +72,6 @@
             (recur))))
       (.toByteArray out))))
 
-(defn default-handle-error
-  "Default error handling function used, which rethrows the Exception"
-  [e _ _]
-  (throw e))
-
 (defn wrap-format-params
   "Wraps a handler such that requests body are deserialized from to
    the right format, added in a *:body-params* key and merged in *:params*.
@@ -97,28 +92,33 @@
   [handler & args]
   (let [{:keys [predicate decoder charset handle-error binary?] :as options} (impl/extract-options args)
         charset (or charset get-or-guess-charset)
-        handle-error (or handle-error default-handle-error)]
-    (fn [{:keys [#^InputStream body] :as req}]
-      (try
-        (if (and body (predicate req))
-          (let [byts (slurp-to-bytes body)]
-            (if (> (count byts) 0)
-              (let [fmt-params
-                    (if binary?
-                      (decoder (ByteArrayInputStream. byts))
-                      (let [#^String char-enc (if (string? charset) charset (charset (assoc req :body byts)))
-                            bstr (String. byts char-enc)]
-                        (decoder bstr)))
-                    req* (assoc req
-                                :body-params fmt-params
-                                :params (merge (:params req)
-                                               (when (map? fmt-params) fmt-params))
-                                :body (ByteArrayInputStream. byts))]
-                (handler req*))
-              (handler req)))
-          (handler req))
-        (catch Exception e
-          (handle-error e handler req))))))
+        decode-request-body (fn [{:keys [#^InputStream body] :as req} raise]
+                              (try
+                                (or (when (and body (predicate req))
+                                      (let [bytes (slurp-to-bytes body)]
+                                        (when (pos? (count bytes))
+                                          (let [#^String charset (if (string? charset)
+                                                                   charset
+                                                                   (charset (assoc req :body bytes)))
+                                                body-params (decoder (if binary?
+                                                                       (ByteArrayInputStream. bytes)
+                                                                       (String. bytes charset)))]
+                                            (assoc req
+                                                   :body-params body-params
+                                                   :params (merge (:params req)
+                                                                  (when (map? body-params)
+                                                                    body-params))
+                                                   :body (ByteArrayInputStream. bytes))))))
+                                    req)
+                                (catch Exception e
+                                  ((or handle-error raise) e handler req))))]
+    (fn
+      ([req]
+       (handler (decode-request-body req (fn [e _ _] (throw e)))))
+      ([req respond raise]
+       (handler (decode-request-body req (fn [e _ _] (raise e e)))
+                respond
+                raise)))))
 
 (def ^:no-doc json-request?
   (make-type-request-pred #"^application/(vnd.+)?json"))
